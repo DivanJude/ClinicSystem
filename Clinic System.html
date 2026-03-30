@@ -38,6 +38,22 @@ body{
     font-size: 14px;
 }
 
+.loading-screen{
+    position: fixed;
+    inset: 0;
+    background: var(--bg-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+}
+
+.loading-logo{
+    width: 180px;
+    height: 180px;
+    object-fit: contain;
+}
+
 /* sidebar layout */
 .app{
     width: 100%;
@@ -1404,13 +1420,17 @@ h4{
 
 <body>
 
-<div class="app">
+<div id="loadingScreen" class="loading-screen">
+    <img class="loading-logo" src="349345690_224575416952360_5872693517820243683_n-removebg-preview-removebg-preview.png" alt="CTU Logo">
+</div>
+
+<div id="appRoot" class="app hidden">
   <div class="main">
     <!-- University Logo -->
     <img id="siteLogo" class="app-logo" src="349345690_224575416952360_5872693517820243683_n-removebg-preview-removebg-preview.png" alt="CTU Logo">
 
     <!-- LOGIN SECTION -->
-    <div id="loginSection">
+    <div id="loginSection" class="hidden">
       <h2> CTU Clinic Reservation System</h2>
       <p style="text-align:center; font-size:11px; color:rgba(110, 87, 87, 0.7); margin-bottom:12px;">Secure Student & Admin Portal</p>
       <input type="text" id="loginId" placeholder="Student ID or Admin">
@@ -2572,27 +2592,27 @@ h4{
             raw = localStorage.getItem('clinicSession');
         } catch(err){
             console.error('Failed to read session:', err);
-            return;
+            return false;
         }
 
-        if(!raw) return;
+        if(!raw) return false;
 
         let session;
         try {
             session = JSON.parse(raw);
         } catch(err){
             clearSession();
-            return;
+            return false;
         }
 
-        if(!session || !session.role) return;
+        if(!session || !session.role) return false;
 
         if(session.role === 'admin'){
             isAdmin = true;
             currentUser = 'Clinic Admin';
             await syncStudentsFromApi();
             showAdminDashboard();
-            return;
+            return true;
         }
 
         if(session.role === 'student' && session.id){
@@ -2623,10 +2643,13 @@ h4{
                 } else {
                     showStudentDashboard();
                 }
+                return true;
             } catch(err){
                 console.error('Failed to restore student session:', err);
             }
         }
+
+        return false;
     }
 
     async function login(){
@@ -3546,13 +3569,22 @@ h4{
     }
 
     // Request notification permission on page load
-    document.addEventListener("DOMContentLoaded", function () {
+    document.addEventListener("DOMContentLoaded", async function () {
+        const appRoot = document.getElementById('appRoot');
+        const loadingScreen = document.getElementById('loadingScreen');
+
         if ("Notification" in window && Notification.permission !== "granted") {
             Notification.requestPermission();
         }
 
-        syncStudentsFromApi();
-        restoreSession();
+        await syncStudentsFromApi();
+        const restored = await restoreSession();
+        if(!restored){
+            showLogin();
+        }
+
+        if(appRoot) appRoot.classList.remove('hidden');
+        if(loadingScreen) loadingScreen.classList.add('hidden');
 
         // Check for appointments periodically
         setInterval(notifyAdminOfAppointments, 60000); // Check every 60 seconds

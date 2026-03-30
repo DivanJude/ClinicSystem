@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -6,8 +8,13 @@ const fs = require('fs');
 const { nanoid } = require('nanoid');
 
 const ADMIN_PASSWORD = 'admin';
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://divanrosas45_db_user:divanrosas45@cluster0.q4haday.mongodb.net/?appName=Cluster0';
+const MONGODB_URI = process.env.MONGODB_URI;
 const PORT = process.env.PORT || 3000;
+
+if (!MONGODB_URI) {
+  console.error('Missing MONGODB_URI environment variable.');
+  process.exit(1);
+}
 
 // MongoDB Connection
 mongoose.connect(MONGODB_URI, {
