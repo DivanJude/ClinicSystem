@@ -381,3 +381,11 @@ mongoose.connection.once('connected', async () => {
     console.log(`Clinic backend running on http://localhost:${PORT}`);
   });
 });
+
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+  app.listen(PORT, () => {
+    console.log("Clinic backend running on http://localhost:" + PORT);
+  });
+}
