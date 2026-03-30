@@ -13,19 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 if (!MONGODB_URI) {
   console.error('Missing MONGODB_URI environment variable.');
-  process.exit(1);
 }
-
-// MongoDB Connection
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => {
-  console.log('Connected to MongoDB');
-}).catch((err) => {
-  console.error('MongoDB connection error:', err);
-  process.exit(1);
-});
 
 // Define Schemas
 const StudentSchema = new mongoose.Schema({
@@ -121,270 +109,297 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-// Wait for DB to be ready before starting server
-mongoose.connection.once('connected', async () => {
-  await initializeDB();
-  
-  app.get('/api/status', (req, res) => {
-    res.json({ ok: true, uptime: process.uptime() });
+let dbReadyPromise = null;
+let dbInitError = null;
+if (MONGODB_URI) {
+  dbReadyPromise = mongoose.connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  }).then(async () => {
+    console.log('Connected to MongoDB');
+    await initializeDB();
+  }).catch((err) => {
+    console.error('MongoDB connection error:', err);
+    dbInitError = err;
   });
+}
 
-  app.post('/api/login', async (req, res) => {
-    const { id, password } = req.body;
-    if (!id || !password) {
-      return res.status(400).json({ error: 'Missing id or password' });
+app.use('/api', async (req, res, next) => {
+  if (!MONGODB_URI) {
+    return res.status(500).json({ error: 'Database connection failed', details: 'MONGODB_URI is not configured' });
+  }
+
+  if (dbInitError) {
+    return res.status(500).json({ error: 'Database connection failed', details: dbInitError.message });
+  }
+
+  try {
+    if (dbReadyPromise) {
+      await dbReadyPromise;
     }
 
-    if (id.toLowerCase() === 'admin' && password === ADMIN_PASSWORD) {
-      return res.json({ role: 'admin', user: { name: 'Clinic Admin' } });
+    if (dbInitError) {
+      return res.status(500).json({ error: 'Database connection failed', details: dbInitError.message });
     }
 
-    try {
-      const student = await Student.findOne({ id });
-      if (!student || student.password !== password) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      return res.json({
-        role: 'student',
-        user: {
-          id: student.id,
-          name: student.name,
-          email: student.email,
-          birthdate: student.birthdate,
-          firstLogin: student.firstLogin,
-          picture: student.picture || ''
-        }
-      });
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.get('/api/student/:id', async (req, res) => {
-    try {
-      const student = await Student.findOne({ id: req.params.id });
-      if (!student) return res.status(404).json({ error: 'Not found' });
-      res.json(student);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.put('/api/student/:id', async (req, res) => {
-    try {
-      const student = await Student.findOne({ id: req.params.id });
-      if (!student) return res.status(404).json({ error: 'Not found' });
-
-      const { name, email, birthdate, password, picture, firstLogin } = req.body;
-      if (name) student.name = name;
-      if (email) student.email = email;
-      if (birthdate) student.birthdate = birthdate;
-      if (password !== undefined && password !== null) student.password = password;
-      if (typeof firstLogin === 'boolean') student.firstLogin = firstLogin;
-      if (picture) student.picture = picture;
-
-      const updated = await student.save();
-      console.log(`Updated student ${req.params.id}:`, updated);
-      res.json(student);
-    } catch (err) {
-      console.error('Error updating student:', err);
-      res.status(500).json({ error: 'Server error: ' + err.message });
-    }
-  });
-
-  app.get('/api/students', async (req, res) => {
-    try {
-      const students = await Student.find();
-      res.json(students);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.get('/api/staff', async (req, res) => {
-    try {
-      const staff = await Staff.find();
-      res.json(staff);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.post('/api/staff', async (req, res) => {
-    try {
-      const { name, specialty, email } = req.body;
-      if (!name || !specialty || !email) {
-        return res.status(400).json({ error: 'Missing required fields' });
-      }
-      const staff = await Staff.create({
-        id: nanoid(),
-        name,
-        specialty,
-        email,
-        slots: []
-      });
-      res.status(201).json(staff);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.delete('/api/staff/:id', async (req, res) => {
-    try {
-      const result = await Staff.deleteOne({ id: req.params.id });
-      if (result.deletedCount === 0) return res.status(404).json({ error: 'Not found' });
-      res.status(204).end();
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.get('/api/appointments', async (req, res) => {
-    try {
-      const appointments = await Appointment.find();
-      res.json(appointments);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.post('/api/appointments', async (req, res) => {
-    try {
-      const { studentId, staffId, date, time, service } = req.body;
-      if (!studentId || !staffId || !date || !time || !service) {
-        return res.status(400).json({ error: 'Missing required fields' });
-      }
-
-      const appointment = await Appointment.create({
-        id: nanoid(),
-        studentId,
-        staffId,
-        date,
-        time,
-        service,
-        status: 'Pending'
-      });
-
-      // Add appointment to student's list
-      const student = await Student.findOne({ id: studentId });
-      if (student) {
-        student.appointments.push(appointment.id);
-        await student.save();
-      }
-
-      res.status(201).json(appointment);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.put('/api/appointments/:id', async (req, res) => {
-    try {
-      const appointment = await Appointment.findOne({ id: req.params.id });
-      if (!appointment) return res.status(404).json({ error: 'Not found' });
-
-      const { status, date, time, staffId, cancelReason, approvalDate } = req.body;
-      if (status) appointment.status = status;
-      if (date) appointment.date = date;
-      if (time) appointment.time = time;
-      if (staffId) appointment.staffId = staffId;
-      if (cancelReason) appointment.cancelReason = cancelReason;
-      if (approvalDate) appointment.approvalDate = approvalDate;
-
-      await appointment.save();
-      res.json(appointment);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.delete('/api/appointments/:id', async (req, res) => {
-    try {
-      const appointment = await Appointment.findOne({ id: req.params.id });
-      if (!appointment) return res.status(404).json({ error: 'Not found' });
-
-      await Appointment.deleteOne({ id: req.params.id });
-
-      // Remove from student's appointments list
-      const student = await Student.findOne({ id: appointment.studentId });
-      if (student) {
-        student.appointments = student.appointments.filter(aid => aid !== appointment.id);
-        await student.save();
-      }
-
-      res.status(204).end();
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.get('/api/staffSchedules', async (req, res) => {
-    try {
-      const schedules = await StaffSchedule.find();
-      res.json(schedules);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.post('/api/staffSchedules', async (req, res) => {
-    try {
-      const { staffId, date, slots } = req.body;
-      if (!staffId || !date || !Array.isArray(slots)) {
-        return res.status(400).json({ error: 'Missing required fields' });
-      }
-
-      const schedule = await StaffSchedule.create({ date, staffId, slots });
-      res.status(201).json(schedule);
-    } catch (err) {
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
-  app.post('/api/reset-password', async (req, res) => {
-    const { id, newPassword } = req.body;
-
-    if (!id || !newPassword) {
-      return res.status(400).json({ error: 'Missing id or new password' });
-    }
-
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
-    }
-
-    try {
-      const student = await Student.findOne({ id });
-      if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
-      }
-
-      student.password = newPassword;
-      student.firstLogin = false;
-      const updated = await student.save();
-      console.log(`Password reset for student ${id}`);
-      console.log('Updated record:', updated);
-
-      return res.json({ message: 'Password reset successfully' });
-    } catch (err) {
-      console.error('Error resetting password:', err);
-      res.status(500).json({ error: 'Server error: ' + err.message });
-    }
-  });
-
-  // Serve the front-end app
-  app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'Clinic System.html'));
-  });
-
-  app.listen(PORT, () => {
-    console.log(`Clinic backend running on http://localhost:${PORT}`);
-  });
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Database connection failed', details: err.message });
+  }
 });
 
-if (process.env.VERCEL) {
-  module.exports = app;
-} else {
+app.get('/api/status', (req, res) => {
+  res.json({ ok: true, uptime: process.uptime() });
+});
+
+app.post('/api/login', async (req, res) => {
+  const { id, password } = req.body;
+  if (!id || !password) {
+    return res.status(400).json({ error: 'Missing id or password' });
+  }
+
+  if (id.toLowerCase() === 'admin' && password === ADMIN_PASSWORD) {
+    return res.json({ role: 'admin', user: { name: 'Clinic Admin' } });
+  }
+
+  try {
+    const student = await Student.findOne({ id });
+    if (!student || student.password !== password) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    return res.json({
+      role: 'student',
+      user: {
+        id: student.id,
+        name: student.name,
+        email: student.email,
+        birthdate: student.birthdate,
+        firstLogin: student.firstLogin,
+        picture: student.picture || ''
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/student/:id', async (req, res) => {
+  try {
+    const student = await Student.findOne({ id: req.params.id });
+    if (!student) return res.status(404).json({ error: 'Not found' });
+    res.json(student);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/student/:id', async (req, res) => {
+  try {
+    const student = await Student.findOne({ id: req.params.id });
+    if (!student) return res.status(404).json({ error: 'Not found' });
+
+    const { name, email, birthdate, password, picture, firstLogin } = req.body;
+    if (name) student.name = name;
+    if (email) student.email = email;
+    if (birthdate) student.birthdate = birthdate;
+    if (password !== undefined && password !== null) student.password = password;
+    if (typeof firstLogin === 'boolean') student.firstLogin = firstLogin;
+    if (picture) student.picture = picture;
+
+    const updated = await student.save();
+    console.log(`Updated student ${req.params.id}:`, updated);
+    res.json(student);
+  } catch (err) {
+    console.error('Error updating student:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+app.get('/api/students', async (req, res) => {
+  try {
+    const students = await Student.find();
+    res.json(students);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/staff', async (req, res) => {
+  try {
+    const staff = await Staff.find();
+    res.json(staff);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/staff', async (req, res) => {
+  try {
+    const { name, specialty, email } = req.body;
+    if (!name || !specialty || !email) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    const staff = await Staff.create({
+      id: nanoid(),
+      name,
+      specialty,
+      email,
+      slots: []
+    });
+    res.status(201).json(staff);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/staff/:id', async (req, res) => {
+  try {
+    const result = await Staff.deleteOne({ id: req.params.id });
+    if (result.deletedCount === 0) return res.status(404).json({ error: 'Not found' });
+    res.status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/appointments', async (req, res) => {
+  try {
+    const appointments = await Appointment.find();
+    res.json(appointments);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/appointments', async (req, res) => {
+  try {
+    const { studentId, staffId, date, time, service } = req.body;
+    if (!studentId || !staffId || !date || !time || !service) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const appointment = await Appointment.create({
+      id: nanoid(),
+      studentId,
+      staffId,
+      date,
+      time,
+      service,
+      status: 'Pending'
+    });
+
+    const student = await Student.findOne({ id: studentId });
+    if (student) {
+      student.appointments.push(appointment.id);
+      await student.save();
+    }
+
+    res.status(201).json(appointment);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/appointments/:id', async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({ id: req.params.id });
+    if (!appointment) return res.status(404).json({ error: 'Not found' });
+
+    const { status, date, time, staffId, cancelReason, approvalDate } = req.body;
+    if (status) appointment.status = status;
+    if (date) appointment.date = date;
+    if (time) appointment.time = time;
+    if (staffId) appointment.staffId = staffId;
+    if (cancelReason) appointment.cancelReason = cancelReason;
+    if (approvalDate) appointment.approvalDate = approvalDate;
+
+    await appointment.save();
+    res.json(appointment);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/appointments/:id', async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({ id: req.params.id });
+    if (!appointment) return res.status(404).json({ error: 'Not found' });
+
+    await Appointment.deleteOne({ id: req.params.id });
+
+    const student = await Student.findOne({ id: appointment.studentId });
+    if (student) {
+      student.appointments = student.appointments.filter(aid => aid !== appointment.id);
+      await student.save();
+    }
+
+    res.status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/staffSchedules', async (req, res) => {
+  try {
+    const schedules = await StaffSchedule.find();
+    res.json(schedules);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/staffSchedules', async (req, res) => {
+  try {
+    const { staffId, date, slots } = req.body;
+    if (!staffId || !date || !Array.isArray(slots)) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const schedule = await StaffSchedule.create({ date, staffId, slots });
+    res.status(201).json(schedule);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/reset-password', async (req, res) => {
+  const { id, newPassword } = req.body;
+
+  if (!id || !newPassword) {
+    return res.status(400).json({ error: 'Missing id or new password' });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+  }
+
+  try {
+    const student = await Student.findOne({ id });
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    student.password = newPassword;
+    student.firstLogin = false;
+    const updated = await student.save();
+    console.log(`Password reset for student ${id}`);
+    console.log('Updated record:', updated);
+
+    return res.json({ message: 'Password reset successfully' });
+  } catch (err) {
+    console.error('Error resetting password:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'Clinic System.html'));
+});
+
+module.exports = app;
+
+if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log("Clinic backend running on http://localhost:" + PORT);
   });
