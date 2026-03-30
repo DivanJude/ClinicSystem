@@ -55,6 +55,8 @@ const AppointmentSchema = new mongoose.Schema({
   time: String,
   service: String,
   status: String,
+  cancelReason: String,
+  approvalDate: String,
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -261,7 +263,7 @@ mongoose.connection.once('connected', async () => {
         date,
         time,
         service,
-        status: 'pending'
+        status: 'Pending'
       });
 
       // Add appointment to student's list
@@ -282,11 +284,13 @@ mongoose.connection.once('connected', async () => {
       const appointment = await Appointment.findOne({ id: req.params.id });
       if (!appointment) return res.status(404).json({ error: 'Not found' });
 
-      const { status, date, time, staffId } = req.body;
+      const { status, date, time, staffId, cancelReason, approvalDate } = req.body;
       if (status) appointment.status = status;
       if (date) appointment.date = date;
       if (time) appointment.time = time;
       if (staffId) appointment.staffId = staffId;
+      if (cancelReason) appointment.cancelReason = cancelReason;
+      if (approvalDate) appointment.approvalDate = approvalDate;
 
       await appointment.save();
       res.json(appointment);

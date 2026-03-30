@@ -411,6 +411,20 @@ th{
     margin:10px 0;
 }
 
+.log-filter-group{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    justify-content:center;
+    margin:10px 0;
+}
+
+.log-filter-group .option-btn{
+    flex:1 1 130px;
+    min-width:130px;
+    margin:0;
+}
+
 .option-button-group.single-line{
     grid-template-columns: 1fr;
 }
@@ -436,6 +450,15 @@ th{
 
 .date-input-text{
     width:100%;
+}
+
+.log-filter .date-input-text{
+    margin-top:6px;
+}
+
+.log-filter-generate{
+    width:100%;
+    margin-top:6px;
 }
 
 .picker-launch-btn{
@@ -1596,7 +1619,7 @@ h4{
           <h3>Reservation Logs & Reports</h3>
           <div class="log-filter">
             <input type="hidden" id="logFilter" value="all">
-            <div class="option-button-group">
+                        <div class="option-button-group log-filter-group">
               <button type="button" class="option-btn log-filter-btn active" data-value="all" onclick="selectLogFilterOption('all', this)">All Records</button>
               <button type="button" class="option-btn log-filter-btn" data-value="daily" onclick="selectLogFilterOption('daily', this)">📅 Daily</button>
               <button type="button" class="option-btn log-filter-btn" data-value="weekly" onclick="selectLogFilterOption('weekly', this)">📆 Weekly</button>
@@ -1606,7 +1629,7 @@ h4{
               <button type="button" class="option-btn log-filter-btn" data-value="cancelled" onclick="selectLogFilterOption('cancelled', this)">✗ Cancelled</button>
             </div>
             <input type="text" id="logDate" class="date-input-text" placeholder="YYYY-MM-DD">
-            <button onclick="generateLogs()" style="background:#ff9800; margin-top:6px;">🔍 Generate Report</button>
+                        <button class="log-filter-generate" onclick="generateLogs()" style="background:#ff9800;">🔍 Generate Report</button>
           </div>
           <table>
             <thead>
@@ -1852,6 +1875,7 @@ h4{
     let appointmentNotificationsSent = {}; // Track which appointments have sent notifications
     let uiConfirmOnOk = null;
     let uiPromptOnSubmit = null;
+    let pendingProfilePicture = "";
     let pickerViewDate = new Date();
     let pickerSelectedDate = "";
     let pickerSelectedTime = "";
@@ -2570,6 +2594,49 @@ h4{
         }
     }
 
+    function normalizeAppointmentStatus(status){
+        const raw = String(status || '').toLowerCase();
+        if(raw === 'approved') return 'Approved';
+        if(raw === 'cancelled' || raw === 'canceled') return 'Cancelled';
+        return 'Pending';
+    }
+
+    function mapAppointmentFromApi(appt){
+        const userId = appt.studentId || appt.user || '';
+        return {
+            id: appt.id,
+            user: userId,
+            userName: (students[userId] && students[userId].name) ? students[userId].name : userId,
+            service: appt.service,
+            date: appt.date,
+            time: appt.time,
+            status: normalizeAppointmentStatus(appt.status),
+            cancelReason: appt.cancelReason || '',
+            approvalDate: appt.approvalDate || null
+        };
+    }
+
+    async function syncAppointmentsFromApi(){
+        try {
+            const response = await fetch('/api/appointments');
+            if(!response.ok) return;
+            const list = await response.json();
+            appointments = (Array.isArray(list) ? list : []).map(mapAppointmentFromApi);
+
+            if(currentUserData && currentUser){
+                const mine = appointments
+                    .filter(a => String(a.user) === String(currentUser))
+                    .map(a => a.id);
+                currentUserData.appointments = mine;
+                if(students[currentUser]){
+                    students[currentUser].appointments = mine;
+                }
+            }
+        } catch(err){
+            console.error('Failed to sync appointments from API:', err);
+        }
+    }
+
     function saveSession(role, id){
         try {
             localStorage.setItem('clinicSession', JSON.stringify({ role, id }));
@@ -2611,6 +2678,7 @@ h4{
             isAdmin = true;
             currentUser = 'Clinic Admin';
             await syncStudentsFromApi();
+            await syncAppointmentsFromApi();
             showAdminDashboard();
             return true;
         }
@@ -2636,6 +2704,8 @@ h4{
                     ...(students[currentUser] || {}),
                     ...currentUserData
                 };
+
+                await syncAppointmentsFromApi();
 
                 if(currentUserData.firstLogin){
                     document.getElementById('loginSection').classList.add('hidden');
@@ -2685,6 +2755,7 @@ h4{
                 currentUser = "Clinic Admin";
                 saveSession('admin', 'admin');
                 await syncStudentsFromApi();
+                await syncAppointmentsFromApi();
                 showAdminDashboard();
             } else if(payload.role === 'student'){
                 isAdmin = false;
@@ -2701,6 +2772,8 @@ h4{
                     ...(students[currentUser] || {}),
                     ...currentUserData
                 };
+
+                await syncAppointmentsFromApi();
 
                 requestNotificationPermission();
 
@@ -2805,18 +2878,19 @@ h4{
     function openProfileModal(){
         document.getElementById("editName").value = currentUserData.name;
         document.getElementById("editEmail").value = currentUserData.email;
+        pendingProfilePicture = currentUserData.picture || "";
         document.getElementById("profileModal").style.display = "block";
         // allow the user to pick a new profile picture and preview it immediately
         let picInput = document.getElementById("editProfilePic");
         if(picInput){
+            picInput.value = "";
             picInput.onchange = function(){
                 let file = this.files[0];
                 if(file){
                     let reader = new FileReader();
                     reader.onload = function(e){
-                        currentUserData.picture = e.target.result;
-                        students[currentUser] = currentUserData;
-                        document.getElementById("profilePic").src = currentUserData.picture;
+                        pendingProfilePicture = e.target.result;
+                        document.getElementById("profilePic").src = pendingProfilePicture;
                     };
                     reader.readAsDataURL(file);
                 }
@@ -2824,7 +2898,7 @@ h4{
         }
     }
 
-    function saveProfile(){
+    async function saveProfile(){
         let name = document.getElementById("editName").value.trim();
         let email = document.getElementById("editEmail").value.trim();
 
@@ -2833,9 +2907,30 @@ h4{
             return;
         }
 
-        currentUserData.name = name;
-        currentUserData.email = email;
-        students[currentUser] = currentUserData;
+        try {
+            const response = await fetch('/api/student/' + encodeURIComponent(currentUser), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name,
+                    email,
+                    picture: pendingProfilePicture
+                })
+            });
+
+            const payload = await response.json();
+            if(!response.ok){
+                throw new Error(payload.error || 'Failed to save profile');
+            }
+
+            currentUserData.name = payload.name;
+            currentUserData.email = payload.email;
+            currentUserData.picture = payload.picture || pendingProfilePicture || "";
+            students[currentUser] = currentUserData;
+        } catch(err){
+            alert("❌ " + err.message);
+            return;
+        }
 
         loadStudentProfile();
         closeModal("profileModal");
@@ -2898,7 +2993,7 @@ h4{
         alert("✓ Password changed successfully!");
     }
 
-    function bookAppointment(){
+    async function bookAppointment(){
         let service = document.getElementById("service").value;
         let date = normalizeDateValue(document.getElementById("date").value);
         document.getElementById("date").value = date;
@@ -2916,23 +3011,26 @@ h4{
             return;
         }
 
-        const appointmentId = Date.now();
-        appointments.push({
-            id: appointmentId,
-            user: currentUser,
-            userName: currentUserData.name,
-            service,
-            date,
-            time: selectedTimeSlot,
-            status: "Pending",
-            approvalDate: null,
-            reminderSent1Day: false,
-            reminderSentHours: false
-        });
-
-        // Add to student's appointment list
-        if(!currentUserData.appointments.includes(appointmentId)){
-            currentUserData.appointments.push(appointmentId);
+        try {
+            const response = await fetch('/api/appointments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    studentId: currentUser,
+                    staffId: 'general',
+                    date,
+                    time: selectedTimeSlot,
+                    service
+                })
+            });
+            const payload = await response.json();
+            if(!response.ok){
+                throw new Error(payload.error || 'Failed to book appointment');
+            }
+            await syncAppointmentsFromApi();
+        } catch(err){
+            alert("❌ " + err.message);
+            return;
         }
 
         selectedTimeSlot = null;
@@ -2967,11 +3065,11 @@ h4{
             row += `<td class="action-buttons" style="display:flex; gap:5px;">`;
 
             if(appt.status === "Approved"){
-                row += `<button class="small-btn" onclick="openRescheduleModal(${apptId})">Reschedule</button>`;
+                row += `<button class="small-btn" onclick="openRescheduleModal('${String(apptId)}')">Reschedule</button>`;
             }
 
             if(appt.status !== "Cancelled"){
-                row += `<button class="small-btn dangerous-btn" onclick="cancelAppointment(${apptId})">✗ Cancel</button>`;
+                row += `<button class="small-btn dangerous-btn" onclick="cancelAppointment('${String(apptId)}')">✗ Cancel</button>`;
             }
             row += `</td>`;
             row += "</tr>";
@@ -2986,14 +3084,14 @@ h4{
     }
 
     function openRescheduleModal(apptId){
-        appointmentsToReschedule = appointments.find(a => a.id === apptId);
+        appointmentsToReschedule = appointments.find(a => String(a.id) === String(apptId));
         document.getElementById("rescheduleDate").value = appointmentsToReschedule.date;
         document.getElementById("rescheduleTime").value = appointmentsToReschedule.time;
         document.getElementById("rescheduleStaff").innerHTML = `<strong>Clinic Slot:</strong> Standard Booking`;
         document.getElementById("rescheduleModal").style.display = "block";
     }
 
-    function confirmReschedule(){
+    async function confirmReschedule(){
         let newDate = document.getElementById("rescheduleDate").value;
         let newTime = document.getElementById("rescheduleTime").value;
 
@@ -3011,8 +3109,22 @@ h4{
             return;
         }
 
-        appointmentsToReschedule.date = newDate;
-        appointmentsToReschedule.time = newTime;
+        try {
+            const response = await fetch('/api/appointments/' + encodeURIComponent(appointmentsToReschedule.id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date: newDate, time: newTime })
+            });
+            const payload = await response.json();
+            if(!response.ok){
+                throw new Error(payload.error || 'Failed to reschedule appointment');
+            }
+            await syncAppointmentsFromApi();
+        } catch(err){
+            alert("❌ " + err.message);
+            return;
+        }
+
         closeModal("rescheduleModal");
         renderStudentAppointments();
         alert("✓ Appointment rescheduled successfully!");
@@ -3020,16 +3132,24 @@ h4{
 
     function cancelAppointment(apptId){
         // students are allowed to cancel at any time, even after approval or past date
-        showUIConfirm("⚠️ Are you sure you want to cancel this appointment?", function(){
-            let appt = appointments.find(a => a.id === apptId);
-            if(!appt) return;
-            appt.status = "Cancelled";
-            appt.cancelReason = "Cancelled by student";
-
-            // keep the appointment in list so the student can still see cancelled history
-            renderStudentAppointments();
-            updateAdminOverview();
-            alert("✓ Appointment cancelled. This slot is now available for other students.");
+        showUIConfirm("⚠️ Are you sure you want to cancel this appointment?", async function(){
+            try {
+                const response = await fetch('/api/appointments/' + encodeURIComponent(apptId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: 'Cancelled' })
+                });
+                const payload = await response.json();
+                if(!response.ok){
+                    throw new Error(payload.error || 'Failed to cancel appointment');
+                }
+                await syncAppointmentsFromApi();
+                renderStudentAppointments();
+                updateAdminOverview();
+                alert("✓ Appointment cancelled. This slot is now available for other students.");
+            } catch(err){
+                alert("❌ " + err.message);
+            }
         });
     }
 
@@ -3170,11 +3290,11 @@ h4{
             row += `<td class="action-buttons" style="display:flex; gap:5px;">`;
 
             if(appt.status === "Pending"){
-                row += `<button class="small-btn" onclick="adminApproveAppointment(${appt.id})" style="font-size:10px; padding:4px; background:#4CAF50;">✓ Approve</button>`;
+                row += `<button class="small-btn" onclick="adminApproveAppointment('${String(appt.id)}')" style="font-size:10px; padding:4px; background:#4CAF50;">✓ Approve</button>`;
             }
 
             if(appt.status !== "Cancelled"){
-                row += `<button class="small-btn dangerous-btn" onclick="openAdminCancelModal(${appt.id})" style="font-size:10px; padding:4px;">✗ Cancel</button>`;
+                row += `<button class="small-btn dangerous-btn" onclick="openAdminCancelModal('${String(appt.id)}')" style="font-size:10px; padding:4px;">✗ Cancel</button>`;
             }
             row += `</td>`;
             row += "</tr>";
@@ -3182,23 +3302,28 @@ h4{
         });
     }
 
-    function adminApproveAppointment(apptId){
-        let appt = appointments.find(a => a.id === apptId);
-        appt.status = "Approved";
-        appt.approvalDate = new Date().toISOString().split('T')[0];
-        
-        // Add to student's appointment list
-        if(!students[appt.user].appointments.includes(apptId)){
-            students[appt.user].appointments.push(apptId);
+    async function adminApproveAppointment(apptId){
+        try {
+            const response = await fetch('/api/appointments/' + encodeURIComponent(apptId), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'Approved' })
+            });
+            const payload = await response.json();
+            if(!response.ok){
+                throw new Error(payload.error || 'Failed to approve appointment');
+            }
+            await syncAppointmentsFromApi();
+            renderAdminAppointments();
+            updateAdminOverview();
+            alert("✓ Appointment approved!");
+        } catch(err){
+            alert("❌ " + err.message);
         }
-
-        renderAdminAppointments();
-        updateAdminOverview();
-        alert("✓ Appointment approved!");
     }
 
     function openAdminCancelModal(apptId){
-        adminCancelingAppt = appointments.find(a => a.id === apptId);
+        adminCancelingAppt = appointments.find(a => String(a.id) === String(apptId));
         if(!adminCancelingAppt) return;
         document.getElementById('adminCancelReason').value = '';
         document.getElementById('adminCancelOtherReason').value = '';
@@ -3215,7 +3340,7 @@ h4{
         }
     });
 
-    function confirmAdminCancel(){
+    async function confirmAdminCancel(){
         if(!adminCancelingAppt) return;
 
         let reason = document.getElementById('adminCancelReason').value;
@@ -3231,24 +3356,32 @@ h4{
         }
 
         let finalReason = (reason === 'Other' ? other : reason);
-        adminCancelingAppt.status = 'Cancelled';
-        adminCancelingAppt.cancelReason = finalReason;
 
-        // keep in student appointment list so they can see cancellation reason
-        if(!students[adminCancelingAppt.user].appointments.includes(adminCancelingAppt.id)){
-            students[adminCancelingAppt.user].appointments.push(adminCancelingAppt.id);
+        try {
+            const response = await fetch('/api/appointments/' + encodeURIComponent(adminCancelingAppt.id), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'Cancelled', cancelReason: finalReason })
+            });
+            const payload = await response.json();
+            if(!response.ok){
+                throw new Error(payload.error || 'Failed to cancel appointment');
+            }
+
+            await syncAppointmentsFromApi();
+            renderAdminAppointments();
+            updateAdminOverview();
+
+            if(currentUserData && currentUserData.appointments.includes(adminCancelingAppt.id)){
+                renderStudentAppointments();
+            }
+
+            closeModal('adminCancelModal');
+            alert('✓ Appointment cancelled with reason: ' + finalReason);
+            adminCancelingAppt = null;
+        } catch(err){
+            alert("❌ " + err.message);
         }
-
-        renderAdminAppointments();
-        updateAdminOverview();
-
-        if(currentUserData && currentUserData.appointments.includes(adminCancelingAppt.id)){
-            renderStudentAppointments();
-        }
-
-        closeModal('adminCancelModal');
-        alert('✓ Appointment cancelled with reason: ' + finalReason);
-        adminCancelingAppt = null;
     }
 
     function adminCancelAppointment(apptId){
